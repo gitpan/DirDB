@@ -17,5 +17,9 @@ Revision history for Perl extension DirDB.
 
 0.09 27 Jan 2004
         remove Storable from dependency list in makefile
-	declare feature freeze
+
+0.10 10 Mar 2004
+        add BLESS metadata.  When set, a hashref will be blessed
+	accordingly.  And it will be set when a blessed hashref is stored.
+
 

@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 sub TIEHASH {
 	my $self = shift;
@@ -67,7 +67,12 @@ sub FETCH {
 	if(-d "$rootpath$key"){
 	
 		tie my %newhash, ref($ref),"$rootpath$key";
- 		return \%newhash;
+ 		return 
+			-f "$rootpath$key/ BLESS"
+			?
+			bless \%newhash, tied(%newhash)->FETCHMETA('BLESS')
+			:
+			 \%newhash;
 	};
 
 	local *FSDBFH;
@@ -83,6 +88,7 @@ my %CircleTracker;
 sub STORE {
 	my ($ref , $key, $value) = @_;
 	my $rootpath = $$ref;
+	my ($bless, $underly);
 	# print "Storing $value to $key in $$ref\n";
 	my $rnd = join 'X',$$,time,rand(10000);
 	
@@ -95,9 +101,15 @@ sub STORE {
 	          croak "$ref version $VERSION cannot store circular structures\n";
 		};
 
+
 		unless ($refvalue eq 'HASH'){ 
+		  ($bless,$underly) = ( "$value" =~ /^(.+)=([A-Z]+)\(/ );
+		  {
+			 no warnings; #suppress uninitalized value warning
+			$underly eq 'HASH'  or
 	          croak 
-		   "$ref version $VERSION only stores references to HASH, not $refvalue\n";
+		   "$ref version $VERSION only stores references to HASH, not $underly blessed to $refvalue\n";	
+		  }
 			
 		};
 		
@@ -146,9 +158,13 @@ sub STORE {
 		        tie %$value, ref($ref), "$rootpath$key" or
 		          warn "tie to [$rootpath$key] failed: $!";
 		# print "assignment";
-			%$value = @cache;
 		};
-		
+
+		if(defined($bless)){
+			tied(%$value)->STOREMETA('BLESS',$bless);
+			# bless $value, $bless; not needed; this is why we are here!
+		};
+
 		GC:
 
 		rmdir "$rootpath LOCK$key";
@@ -159,6 +175,7 @@ sub STORE {
 		 if($@){
 			croak "GC problem: $@";
 		 };
+		
 		 return;
 
 	}; # if refvalue
@@ -316,13 +333,14 @@ __END__
 
 =head1 NAME
 
-DirDB - Perl extension to use a directory as a database
+DirDB - use a directory as a persistence back end for (multi-level) (blessed) hashes
 
 =head1 SYNOPSIS
 
   use DirDB;
   tie my %session, 'DirDB', "./data/session";
-  $session{$sessionID} -> {email} = get_emailaddress();
+  $session{$sessionID}{email} = get_emailaddress();
+  $session{$sessionID}{objectcache}{fribble} ||= new fribble;
 
 =head1 DESCRIPTION
 
@@ -350,6 +368,9 @@ As of version 0.07, non-HASH references are stored using L<Storable>
 
 As of version 0.08, non-HASH references cause croaking again: the
 Storable functioning has been moved to L<DirDB::Storable>
+
+Version 0.10 will store and retrieve blessed hash-references and
+blesses them back into what they were when they were stored.
 
 DirDB will croak if it can't open an existing file system
 entity.
@@ -385,7 +406,16 @@ are the contents of the files.
 STOREMETA and FETCHMETA methods are provided for subclasses
 who which to store and fetch metadata (such as array size)
 which will not appear in the data returned by NEXTKEY and which
-cannot be accessed directly through STORE or FETCH.
+cannot be accessed directly through STORE or FETCH. Currently
+one metadatum, 'BLESS' is used to indicate what package to
+bless a tied hashref into.
+
+=head2 storing and retrieving blessed objects
+
+blessed objects can now be stored, as long as their underlying representation
+is a hash.  This may change. The root of a DirDB tree will not get blessed
+but all blessed hashreference branches will be blessed on fetch into the package
+they were in when stored. 
 
 =head2 RISKS
 

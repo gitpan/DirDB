@@ -71,12 +71,20 @@ my $href = delete $dcty{X};
 # print "has values @{[values %$href]}\n";
 ok('banana',$href->{fruit});
 
+
+my $Object = bless {a=>1,b=>2,c=>3} => 'Some Package';
+$dcty{Object} = $Object;
+ok('Some Package',ref($dcty{Object}));
+
+$Object->{d} = 4;
+ok($dcty{Object}->{d},4);
+
 %dcty = ();
-ok(1);
 
 untie %dcty;
-ok(1);
 
 ok(rmdir "./test_dir");
+
+
 
 
