@@ -3,7 +3,7 @@
 # change 'tests => 1' to 'tests => last_test_to_print';
 
 use Test;
-BEGIN { plan tests => 7 };
+BEGIN { plan tests => 8 };
 use DirDB;
 ok(1); # If we made it this far, we're ok.
 
@@ -52,10 +52,18 @@ print "fee fum five? ", (grep {defined $_} @dcty{1..5}),"\n";
 
 ok(6);
 
-my $$x = "reference error test\n";
+my $$x = "reference test\n";
 print $$x;
 eval { $dcty{reftest} = $x };
-$@ =~ /does not support storing references/ and ok(7);
+$@ and ok(7);
+
+my %x;
+$x{something}='else';
+$dcty{X} = \%x;	# should tie %x to dcty/X
+$x{fruit} = 'banana';
+ok('banana',$dcty{X}->{fruit});
+
+
 
 
 

@@ -5,60 +5,26 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.04';
-
-# @ISA = qw(Tie::Array);
-
-
-
-# Preloaded methods go here.
-
-
-# =pod
-#DirDB is a package that lets you access a directory
-#as a hash. 
-#
-# subdirectories become references to
-#	  tied objects of this type
-#
-#pipes and so on are opened for reading and read from
-#on FETCH, and clobbered on STORE.  This may change
-#but not immediately.
-#
-#
-# =cut
+our $VERSION = '0.05';
 
 sub TIEHASH {
 	my $self = shift;
 	my $rootpath = shift or croak "we need a rootpath";
-	$rootpath =~ s#/$##; # lose trailing slash for MacOS
+	$rootpath =~ s#/+$##; # lose trailing slash(es)
 	-d $rootpath or
 	   mkdir $rootpath, 0777 or
 	     croak "could not create dir $rootpath: $!";
 
-
-	$rootpath .= '/';
-	bless \$rootpath, $self;
+	bless \"$rootpath/", $self;
 };
 
 sub TIEARRAY {
-
-	confess "DirDB does not support arrays, use DirDB::Array";
-
-#	my $self = shift;
-#	my $rootpath = shift or croak "we need a rootpath";
-#	$rootpath =~ s#/$##; # lose trailing slash for MacOS
-#	-d $rootpath or
-#	   mkdir $rootpath, 0777 or
-#	     croak "could not create dir $rootpath: $!";
-#
-#
-#	$rootpath .= '/';
-#	my $Object = bless \$rootpath, $self;
-#	$Object->STOREMETA('ARRAY', 0);
-#	return $Object;
+	confess "DirDB does not support arrays yet";
 };
 
+sub TIESCALAR {
+	confess "DirDB does not support scalars yet -- try Tie::Slurp";
+};
 
 
 sub EXISTS {
@@ -67,7 +33,26 @@ sub EXISTS {
 	$key =~ s/^ /  /; #escape leading space into two spaces
 	# defined (my $key = shift) or return undef;
 	$key eq '' and $key = ' EMPTY';
-	-e "$rootpath$key";
+	-e "$rootpath$key" or -e "$rootpath LOCK$key";
+};
+
+sub recursive_delete($);
+sub recursive_delete($){
+# unlink a file or rm -rf a directory tree
+	my $path = shift;
+	unless ( -d $path and ! -l $path ){
+		unlink $path;
+		-e $path and die "Could not unlink [$path]: $!\n";
+		return;
+	};
+	opendir FSDBFH, $path or croak "opendir $path: $!";
+	my @DirEnts = (readdir FSDBFH);
+	while(defined(my $entity = shift @DirEnts )){
+		$entity =~ /^\.\.?\Z/ and next;
+		 recursive_delete "$path/$entity";
+	};
+	rmdir $path or die "could not rmdir [$path]: $!\n";
+
 };
 
 sub FETCH {
@@ -77,43 +62,113 @@ sub FETCH {
 	$key =~ s/^ /  /; #escape leading space into two spaces
 	# defined (my $key = shift) or return undef;
 	$key eq '' and $key = ' EMPTY';
+	sleep 1 while -e "$rootpath LOCK$key";
 	-e "$rootpath$key" or return undef;
 	if(-d "$rootpath$key"){
+		tie my %newhash, ref($ref),"$rootpath$key";
+ 		return \%newhash;
+	};
 
-		#if -e ("$rootpath ARRAY"{
-		#	tie my @array, ref($ref),"$rootpath$key";
- 		#	return \@array;
-		#};
- 
-		tie my %hash, ref($ref),"$rootpath$key";
- 		return \%hash;
+	local *FSDBFH;
+	open FSDBFH, "<$rootpath$key"
+	   or croak "cannot open $rootpath$key: $!";
+
+	local $/ = undef;
+	<FSDBFH>;
+};
+
+{
+my %CircleTracker;
+sub STORE {
+	my ($ref , $key, $value) = @_;
+	my $rootpath = $$ref;
+	# print "Storing $value to $key in $$ref\n";
+	my $rnd = join 'X',$$,time,rand(10000);
 	
+	$key =~ s/^ /  /; #escape leading space into two spaces
+	$key eq '' and $key = ' EMPTY';
+	my $refvalue = ref $value;
+	if ($refvalue){
+
+		if ( $CircleTracker{$value}++ ){
+	          croak "$ref version $VERSION cannot store circular structures\n";
+		};
+
+		$refvalue eq 'HASH' or	
+	          croak 
+		   "$ref version $VERSION only stores references to HASH, not $refvalue\n";
+
+		if (tied (%$value)){
+			# recursive copy
+		 tie my %tmp, ref($ref), "$rootpath TMP$rnd" or
+		   croak "tie failed: $!";
+		 eval{
+		 	# %tmp = %$value
+
+			my ($k,$v);
+			while(($k,$v) = each %$value){
+				$tmp{$k}=$v;
+			};
+		 };
+		 # print "$rootpath TMP$rnd should now contain @{[%$value]}\n";
+		 if($@){
+		    my $message = $@;
+		    eval {recursive_delete "$rootpath TMP$rnd"};
+		    croak "trouble writing [$value] to [$rootpath$key]: $message";
+
+		};
+	
+		# print "lock (tied)";
+		 sleep 1 while !mkdir "$rootpath LOCK$key",0777;
+		 {
+		  no warnings;
+		  rename "$rootpath$key", "$rootpath GARBAGE$rnd"; 
+		 };
+		 rename "$rootpath TMP$rnd", "$rootpath$key";
+
+		}else{
+			# cache, bless, restore
+			my @cache = %$value;
+			%$value = ();
+		# print "lock (untied)";
+			while( !mkdir "$rootpath LOCK$key",0777){
+				# print "lock conflivt: $!";
+				sleep 1;
+			};
+			{
+			 no warnings;
+		         rename "$rootpath$key", "$rootpath GARBAGE$rnd";
+		        };
+		        tie %$value, ref($ref), "$rootpath$key" or
+		          warn "tie to [$rootpath$key] failed: $!";
+		# print "assignment";
+			%$value = @cache;
+		};
+		
+		rmdir "$rootpath LOCK$key";
+
+		delete $CircleTracker{$value};
+		# print "GC";
+		 eval {recursive_delete "$rootpath GARBAGE$rnd"};
+		 if($@){
+			croak "GC problem: $@";
+		 };
+		 return;
 
 	};
 
-	open FSDBFH, "<$rootpath$key"
-	   or croak "cannot open $rootpath$key: $!";
-	join '', (<FSDBFH>);
-};
-
-sub STORE {
-#	my $ref = shift;
-#	my $rootpath = $$ref; # $rootpath = ${shift}
-#			      # apparently worked as a cast instead
-#			      # of a dereference?
-
-	my $rootpath = ${+shift}; # RTFM! :)
-
-	
-	my $key = shift;
-	$key =~ s/^ /  /; #escape leading space into two spaces
-	$key eq '' and $key = ' EMPTY';
-	my $value = shift;
-	ref $value and croak "This hash does not support storing references";
-	open FSDBFH,">$rootpath${$}TEMP$key" or croak $!;
-	print FSDBFH $value;
+	# store a scalar using write-to-temp-and-rename
+	local *FSDBFH;
+	open FSDBFH,">$rootpath TMP$rnd" or croak $!;
+	# defined $value and print FSDBFH $value;
+	# this will work under -l without spurious newlines 
+	defined $value and syswrite FSDBFH, $value;
+	# print FSDBFH qq{$value};
 	close FSDBFH;
-	rename "$rootpath${$}TEMP$key", "$rootpath$key" or croak $!;
+	rename "$rootpath TMP$rnd" , "$rootpath$key" or
+	  croak
+	     " could not rename temp file to [$rootpath$key]: $!";
+};
 };
 
 sub FETCHMETA {
@@ -127,9 +182,10 @@ sub FETCHMETA {
 
 	};
 
+	local $/ = undef;
 	open FSDBFH, "<$rootpath$key"
 	   or croak "cannot open $rootpath$key: $!";
-	join '', (<FSDBFH>);
+	<FSDBFH>;
 };
 
 sub STOREMETA {
@@ -138,7 +194,8 @@ sub STOREMETA {
 	my $value = shift;
 	ref $value and croak "DirDB does not support storing references in metadata at version $VERSION";
 	open FSDBFH,">$rootpath${$}TEMP$key" or croak $!;
-	print FSDBFH $value;
+	defined $value and syswrite FSDBFH, $value;
+	# print FSDBFH $value;
 	close FSDBFH;
 	rename "$rootpath${$}TEMP$key", "$rootpath$key" or croak $!;
 };
@@ -148,16 +205,25 @@ sub DELETE {
 	my $key = shift;
 	$key =~ s/^ /  /; #escape leading space into two spaces
 	$key eq '' and $key = ' EMPTY';
-	if(-d "$rootpath$key"){
-		rmdir "$rootpath$key"
-		   or croak "could not delete directory $rootpath$key: $!";
-		return "$rootpath$key";
-	};
+
 	-e "$rootpath$key" or return undef;
 
-	open FSDBFH, "<$rootpath$key"
-	   or croak "cannot open $rootpath$key: $!";
-	my $value = join '', (<FSDBFH>);
+
+	-d "$rootpath$key" and do {
+	rename "$rootpath$key", "$rootpath DELETIA$key";
+
+	eval {recursive_delete "$rootpath DELETIA$key"};
+	$@ and croak "could not delete directory $rootpath$key: $@";
+		defined wantarray and carp "data in tied hash lost in delete";
+		return {};
+	};
+
+	my $value;
+	if(defined wantarray){
+		local $/ = undef;
+		open FSDBFH, "<$rootpath$key";
+		my $value = <FSDBFH>;
+	};
 	unlink "$rootpath$key";
 	$value;
 };
@@ -166,12 +232,13 @@ sub CLEAR{
 	my $ref = shift;
 	my $path = $$ref;
 	opendir FSDBFH, $path or croak "opendir $path: $!";
-	while(defined(my $entity = readdir FSDBFH )){
+	my @ents = (readdir FSDBFH );
+	while(defined(my $entity = shift @ents )){
 		$entity =~ /^\.\.?\Z/ and next;
 		$entity = join('',$path,$entity);
 		if(-d $entity){
-		 rmdir "$entity"
-		   or croak "could not delete (sub-container?) directory $entity: $!";
+		   eval {recursive_delete $entity};
+		   $@ and  croak "could not delete (sub-container?) directory $entity: $@";
 		};
 		unlink $entity;
 	};
@@ -217,7 +284,7 @@ sub CLEAR{
    };
    
    sub DESTROY{
-       delete $IteratorListings{shift};
+       delete $IteratorListings{$_[0]};
    };
  
 };
@@ -236,6 +303,7 @@ DirDB - Perl extension to use a directory as a database
 
   use DirDB;
   tie my %session, 'DirDB', "./data/session";
+  $session{$sessionID} -> {email} = get_emailaddress();
 
 =head1 DESCRIPTION
 
@@ -250,38 +318,60 @@ such as object type or array size or whatever.  Key names beginning
 with a space get an additional space prepended to the name
 for purposes of naming the file to store that value.
 
-DirDB croaks on attempts to store references. There are
-hooks in place as of version 0.04 to do something more sensible, 
-like recursively blatting out the whole object tree being
-referred to, but to prevent DirDB being involved in the
-possible endless loop problems, implementing such behavior is
-left for subclassed to do.
+As of version 0.05, DirDB can store hash references. references
+to tied hashes are recursively copied, references to plain
+hashes are first tied to DirDB and then recursively copied. Storing
+a circular hash reference structure will cause DirDB to croak.
 
 DirDB will croak if it can't open an existing file system
-entity, so wrap your fetches in eval blocks if there are
-possibilities of permissions problems.  Or better yet rewrite
-it into DirDB::nonfragile and publish that.
+entity.
 
-subdirectories become references to tied objects of this type,
-but this is a read-only function at this time.
+ tie my %d => DirDB, '/tmp/foodb';
+ 
+ $d{ref1}->{ref2}->{ref3}->{ref4} = 'something'; 
+ # 'something' is now stored in /tmp/foodb/ref1/ref2/ref3/ref4
+ 
+ my %e = (1 => 2, 2 => 3);
+ $d{e} = \%e;
+ # %e is now tied to /tmp/foodb/e, and 
+ # /tmp/foodb/e/1 and /tmp/foodb/e/2 now contain 2 and 3, respectively
 
-pipes and so on are opened for reading and read from
-on FETCH, and clobbered on STORE.  This may change
-but not immediately.
+ $d{f} = \%e;
+ # like `cp -R /tmp/foodb/e /tmp/foodb/f`
+
+ $e{destination} = 'Kashmir';
+ # sets /tmp/foodb/e/destination
+ # leaves /tmp/foodb/f alone
+ 
+ my %g = (1 => 2, 2 => 3);
+ $d{g} = {%g};
+ # %g has been copied into /tmp/foodb/g/ without tying %g.
+ 
+Pipes and so on are opened for reading and read from
+on FETCH, and clobbered on STORE. 
 
 The underlying object is a scalar containing the path to 
 the directory.  Keys are names within the directory, values
 are the contents of the files.
 
-If anyone cares to benchmark DirDB on ReiserFS against
-Berkeley DB for databases of verious sizes, please send me
-the results and I will include them here.
 
 STOREMETA and FETCHMETA methods are provided for subclasses
 who which to store and fetch metadata (such as array size)
 which will not appear in the data returned by NEXTKEY and which
-cannot be accessed directly through STORE or FETCH.  DirDB::Array
-will store its size and so on using these methods.
+cannot be accessed directly through STORE or FETCH.
+
+
+=head2 RISKS
+
+"mkdir locking" is used to protect incomplete directories
+from being accessed while they are being written. It is conceivable
+that your program might catch a
+signal and die while inside a critical section.  If this happens,
+a simple 
+
+    find /your/data -type d -name ' LOCK*'
+
+at the command line will identify what you need to delete.
 
 
 =head2 EXPORT
@@ -295,7 +385,7 @@ David Nicol, davidnicol@cpan.org
 
 =head1 Assistance
 
-QA provided by members of Kansas City Perl Mongers, including
+version 0.04 QA provided by members of Kansas City Perl Mongers, including
 Andrew Moore and Craig S. Cottingham.
 
 =head1 LICENSE
