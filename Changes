@@ -14,3 +14,8 @@ Revision history for Perl extension DirDB.
 0.08 8 Dec dln
 	moved Storable function to DirDB::Storable
 	more documentation
+
+0.09 27 Jan 2004
+        remove Storable from dependency list in makefile
+	declare feature freeze
+

@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 
 sub TIEHASH {
 	my $self = shift;
@@ -445,6 +445,8 @@ better read L<perltie> before trying to extend this
 L<DirDB::Storable> uses Storable for storing and retrieving arbitrary types
 
 L<DirDB::FTP> provides complete DirDB function over the FTP protocol
+
+L<Tie::Dir> is concerned with accessing C<stat> information, not file contents
 
 =cut
 
