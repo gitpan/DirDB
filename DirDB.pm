@@ -5,7 +5,9 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.06';
+use Storable qw(nstore retrieve );
+
+our $VERSION = '0.07';
 
 sub TIEHASH {
 	my $self = shift;
@@ -65,6 +67,11 @@ sub FETCH {
 	sleep 1 while -e "$rootpath LOCK$key";
 	-e "$rootpath$key" or return undef;
 	if(-d "$rootpath$key"){
+	
+		if (-e "$rootpath$key/ Storable"){
+			return retrieve("$rootpath$key/ Storable")
+		};
+
 		tie my %newhash, ref($ref),"$rootpath$key";
  		return \%newhash;
 	};
@@ -94,10 +101,24 @@ sub STORE {
 	          croak "$ref version $VERSION cannot store circular structures\n";
 		};
 
-		$refvalue eq 'HASH' or	
-	          croak 
-		   "$ref version $VERSION only stores references to HASH, not $refvalue\n";
-
+		unless ($refvalue eq 'HASH'){ 
+	        #  croak 
+		#   "$ref version $VERSION only stores references to HASH, not $refvalue\n";
+			mkdir "$rootpath TMP$rnd" or croak "mkdir failed: $!";
+			nstore $value, "$rootpath TMP$rnd/ Storable";
+			while( !mkdir "$rootpath LOCK$key",0777){
+				# print "lock conflivt: $!";
+				sleep 1;
+			};
+			{
+			 no warnings;
+		         rename "$rootpath$key", "$rootpath GARBAGE$rnd";
+		        };
+			rename "$rootpath TMP$rnd", "$rootpath$key";
+			goto GC;
+			
+		};	# end Storable use
+		
 		if (tied (%$value)){
 			# recursive copy
 		 tie my %tmp, ref($ref), "$rootpath TMP$rnd" or
@@ -126,7 +147,8 @@ sub STORE {
 		 };
 		 rename "$rootpath TMP$rnd", "$rootpath$key";
 
-		}else{
+		}else{ # not tied
+		
 			# cache, bless, restore
 			my @cache = %$value;
 			%$value = ();
@@ -145,6 +167,8 @@ sub STORE {
 			%$value = @cache;
 		};
 		
+		GC:
+
 		rmdir "$rootpath LOCK$key";
 
 		delete $CircleTracker{$value};
@@ -155,7 +179,7 @@ sub STORE {
 		 };
 		 return;
 
-	};
+	}; # if refvalue
 
 	# store a scalar using write-to-temp-and-rename
 	local *FSDBFH;
@@ -204,6 +228,7 @@ sub DELETE {
 	my $ref = shift;
 	my $rootpath = ${$ref};
 	my $key = shift;
+	my $value;
 	$key =~ s/^ /  /; #escape leading space into two spaces
 	$key eq '' and $key = ' EMPTY';
 
@@ -211,9 +236,19 @@ sub DELETE {
 
 
 	-d "$rootpath$key" and do {
+
 	rename "$rootpath$key", "$rootpath DELETIA$key";
 
 	  if(defined wantarray){
+		if (-e "$rootpath DELETIA$key/ Storable"){
+			$value= retrieve("$rootpath DELETIA$key/ Storable");
+
+			eval {recursive_delete "$rootpath DELETIA$key"};
+			$@ and croak "could not delete directory $rootpath$key: $@";
+			return $value;
+
+			
+		};
 		my %rethash;
 		tie my %tmp, ref($ref), "$rootpath DELETIA$key";
 		my @keys = keys %tmp;
@@ -233,7 +268,6 @@ sub DELETE {
 	  };
 	};
 
-	my $value;
 	if(defined wantarray){
 		local $/ = undef;
 		open FSDBFH, "<$rootpath$key";
@@ -342,6 +376,8 @@ As of version 0.06, DirDB now recursively copies subdirectory contents
 into an in-memory hash and returns a reference to that hash when
 a previously stored hash reference is deleted in non-void context.
 
+As of version 0.07, non-HASH references are stored using L<Storable>
+
 DirDB will croak if it can't open an existing file system
 entity.
 
@@ -365,6 +401,10 @@ entity.
  my %g = (1 => 2, 2 => 3);
  $d{g} = {%g};
  # %g has been copied into /tmp/foodb/g/ without tying %g.
+ 
+ $d{an_array} = [1..10];
+ # the array reference has been serialized using Storable::nstore
+ # to "/tmp/foodb/an_array/ Storable" (one space before Storable)
  
 Pipes and so on are opened for reading and read from
 on FETCH, and clobbered on STORE. 

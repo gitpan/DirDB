@@ -3,39 +3,35 @@
 # change 'tests => 1' to 'tests => last_test_to_print';
 
 use Test;
-BEGIN { plan tests => 9 };
+BEGIN { plan tests => 12 };
 use DirDB;
 ok(1); # If we made it this far, we're ok.
 
 use strict;
 
 # tie my %dcty, 'DirDB', ".";
-tie my %dcty, 'DirDB', './test_dir';
-
-ok(2);
+ok(tie my %dcty, 'DirDB', './test_dir');
 
 # print  "\nSTORE TEST\n";
 $dcty{pid} = $$;
-$dcty{+time} = time;
-$dcty{"time"} = time;
 
 # print "\nFETCH TEST\n";
-$dcty{pid} == $$ or die "pid did not store and recover";
-$dcty{"time"} == time or die "time did not store and recover";
+ok($dcty{pid},$$);
+ok(delete($dcty{pid}),$$);
 
-ok(3);
+
 
 # print "\nEACH TEST\n";
-while (my ($k,$v) = each %dcty ) {
+# while (my ($k,$v) = each %dcty ) {
   # print "got key <$k>\n";
   # print qq( $k -> $v\n );
-}
+# }
 
 # print "\nKEYS TEST\n";
-for my $f ( keys %dcty ) {
+# for my $f ( keys %dcty ) {
   # print "got key <$f>\n";
   # print qq( $f -> $dcty{ $f }\n );
-}
+# }
 
 # print "\nKeys now @{[keys %dcty]}\n";
 # print "\nCLEARING\n";
@@ -43,7 +39,7 @@ for my $f ( keys %dcty ) {
 
 # print "Keys now @{[keys %dcty]}\n";
 
-ok(4);
+ ok((keys %dcty) == 0);
 # print "\nDelete slice test\n";
 @dcty{1..5} = qw{fee fi fo fum five};
 # print "fi fo? ",delete( @dcty{2,3}),"\n";
@@ -54,10 +50,15 @@ ok("fi fo","@{[delete( @dcty{2,3})]}");
 ok( "fee fum five", "@{[grep {defined $_} @dcty{1..5}]}");
 # ok(6);
 
-my $$x = "reference test\n";
+# my $$x = "reference test\n";
+# does not work with early perl-fives (thanks, cpantesters!)
+my $x = \"reference test\n";
 # print $$x;
-eval { $dcty{reftest} = $x };
-$@ and ok(7);
+# eval { $dcty{reftest} = $x };
+# ok($@);
+# now handled by Storable
+$dcty{reftest} = $x;
+ok (${$dcty{reftest}}, "reference test\n");
 
 my %x;
 $x{something}='else';
@@ -72,6 +73,15 @@ my $href = delete $dcty{X};
 # print "has keys @{[keys %$href]}\n";
 # print "has values @{[values %$href]}\n";
 ok('banana',$href->{fruit});
+
+# storable test
+
+$dcty{arrayref} = [10..30];
+my $cloned_aref = $dcty{arrayref};
+my $cloned_aref2 = delete $dcty{arrayref};
+
+ok($cloned_aref -> [10] , 20);
+ok($cloned_aref2 -> [10] , 20);
 
 
 

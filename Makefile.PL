@@ -4,5 +4,5 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
     'NAME'		=> 'DirDB',
     'VERSION_FROM'	=> 'DirDB.pm', # finds $VERSION
-    'PREREQ_PM'		=> {}, # e.g., Module::Name => 1.1
+    'PREREQ_PM'		=> {Storable => 1}, # e.g., Module::Name => 1.1
 );
