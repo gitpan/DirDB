@@ -10,3 +10,7 @@ Revision history for Perl extension DirDB.
 	
 0.06 18 Nov 2003 dln
 	added recursive return of deleted directories into hashrefs
+
+0.08 8 Dec dln
+	moved Storable function to DirDB::Storable
+	more documentation

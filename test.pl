@@ -3,7 +3,7 @@
 # change 'tests => 1' to 'tests => last_test_to_print';
 
 use Test;
-BEGIN { plan tests => 12 };
+BEGIN { plan tests => 13 };
 use DirDB;
 ok(1); # If we made it this far, we're ok.
 
@@ -54,11 +54,8 @@ ok( "fee fum five", "@{[grep {defined $_} @dcty{1..5}]}");
 # does not work with early perl-fives (thanks, cpantesters!)
 my $x = \"reference test\n";
 # print $$x;
-# eval { $dcty{reftest} = $x };
-# ok($@);
-# now handled by Storable
-$dcty{reftest} = $x;
-ok (${$dcty{reftest}}, "reference test\n");
+eval { $dcty{reftest} = $x };
+ok($@);
 
 my %x;
 $x{something}='else';
@@ -74,14 +71,12 @@ my $href = delete $dcty{X};
 # print "has values @{[values %$href]}\n";
 ok('banana',$href->{fruit});
 
-# storable test
+%dcty = ();
+ok(1);
 
-$dcty{arrayref} = [10..30];
-my $cloned_aref = $dcty{arrayref};
-my $cloned_aref2 = delete $dcty{arrayref};
+untie %dcty;
+ok(1);
 
-ok($cloned_aref -> [10] , 20);
-ok($cloned_aref2 -> [10] , 20);
-
+ok(rmdir "./test_dir");
 
 

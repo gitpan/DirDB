@@ -5,9 +5,7 @@ use strict;
 use warnings;
 use Carp;
 
-use Storable qw(nstore retrieve );
-
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 sub TIEHASH {
 	my $self = shift;
@@ -68,10 +66,6 @@ sub FETCH {
 	-e "$rootpath$key" or return undef;
 	if(-d "$rootpath$key"){
 	
-		if (-e "$rootpath$key/ Storable"){
-			return retrieve("$rootpath$key/ Storable")
-		};
-
 		tie my %newhash, ref($ref),"$rootpath$key";
  		return \%newhash;
 	};
@@ -102,22 +96,10 @@ sub STORE {
 		};
 
 		unless ($refvalue eq 'HASH'){ 
-	        #  croak 
-		#   "$ref version $VERSION only stores references to HASH, not $refvalue\n";
-			mkdir "$rootpath TMP$rnd" or croak "mkdir failed: $!";
-			nstore $value, "$rootpath TMP$rnd/ Storable";
-			while( !mkdir "$rootpath LOCK$key",0777){
-				# print "lock conflivt: $!";
-				sleep 1;
-			};
-			{
-			 no warnings;
-		         rename "$rootpath$key", "$rootpath GARBAGE$rnd";
-		        };
-			rename "$rootpath TMP$rnd", "$rootpath$key";
-			goto GC;
+	          croak 
+		   "$ref version $VERSION only stores references to HASH, not $refvalue\n";
 			
-		};	# end Storable use
+		};
 		
 		if (tied (%$value)){
 			# recursive copy
@@ -234,21 +216,12 @@ sub DELETE {
 
 	-e "$rootpath$key" or return undef;
 
-
 	-d "$rootpath$key" and do {
 
 	rename "$rootpath$key", "$rootpath DELETIA$key";
 
 	  if(defined wantarray){
-		if (-e "$rootpath DELETIA$key/ Storable"){
-			$value= retrieve("$rootpath DELETIA$key/ Storable");
 
-			eval {recursive_delete "$rootpath DELETIA$key"};
-			$@ and croak "could not delete directory $rootpath$key: $@";
-			return $value;
-
-			
-		};
 		my %rethash;
 		tie my %tmp, ref($ref), "$rootpath DELETIA$key";
 		my @keys = keys %tmp;
@@ -338,9 +311,6 @@ sub CLEAR{
  
 };
 
-
-
-
 1;
 __END__
 
@@ -378,6 +348,9 @@ a previously stored hash reference is deleted in non-void context.
 
 As of version 0.07, non-HASH references are stored using L<Storable>
 
+As of version 0.08, non-HASH references cause croaking again: the
+Storable functioning has been moved to L<DirDB::Storable>
+
 DirDB will croak if it can't open an existing file system
 entity.
 
@@ -402,10 +375,6 @@ entity.
  $d{g} = {%g};
  # %g has been copied into /tmp/foodb/g/ without tying %g.
  
- $d{an_array} = [1..10];
- # the array reference has been serialized using Storable::nstore
- # to "/tmp/foodb/an_array/ Storable" (one space before Storable)
- 
 Pipes and so on are opened for reading and read from
 on FETCH, and clobbered on STORE. 
 
@@ -413,14 +382,14 @@ The underlying object is a scalar containing the path to
 the directory.  Keys are names within the directory, values
 are the contents of the files.
 
-
 STOREMETA and FETCHMETA methods are provided for subclasses
 who which to store and fetch metadata (such as array size)
 which will not appear in the data returned by NEXTKEY and which
 cannot be accessed directly through STORE or FETCH.
 
-
 =head2 RISKS
+
+=head3 stale lock risk
 
 "mkdir locking" is used to protect incomplete directories
 from being accessed while they are being written. It is conceivable
@@ -432,11 +401,29 @@ a simple
 
 at the command line will identify what you need to delete.
 
+Only the very end of the write operation is protected by the locking:
+during a write, other processes will be able to read the old data. They
+will also be able to start their own overwrites. 
+
+DirDB attempts to guarantee that written data is complete (not partial.)
+
+DirDB does not attempt to guarantee atomicity of updates.
+
+=head3 unexpected persistence
+
+Untied hash references assigned into a DirDB tied hash will become
+tied to the file system at the point they are first assigned.  This
+has the potential to cause confusion.
+
+=head3 unexpected copy instead of link
+
+Tied hash references are recursively copied. This includes hash references
+tied due to being assigned into a DirDB tied hash.
+
 
 =head2 EXPORT
 
 None by default.
-
 
 =head1 AUTHOR
 
@@ -453,10 +440,11 @@ GPL/Artistic (the same terms as Perl itself)
 
 =head1 SEE ALSO
 
-better read <l perltie> before trying to extend this
+better read L<perltie> before trying to extend this
 
+L<DirDB::Storable> uses Storable for storing and retrieving arbitrary types
 
-
-GPL
+L<DirDB::FTP> provides complete DirDB function over the FTP protocol
 
 =cut
+
