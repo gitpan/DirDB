@@ -7,4 +7,6 @@ Revision history for Perl extension DirDB.
 	added saving of hash references
 	added check for "$rootpath LOCK$key" to go away in FETCH 
 	added tying of stored hashrefs
-
+	
+0.06 18 Nov 2003 dln
+	added recursive return of deleted directories into hashrefs

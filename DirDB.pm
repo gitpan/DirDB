@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 sub TIEHASH {
 	my $self = shift;
@@ -201,7 +201,8 @@ sub STOREMETA {
 };
 
 sub DELETE {
-	my $rootpath = ${+shift};
+	my $ref = shift;
+	my $rootpath = ${$ref};
 	my $key = shift;
 	$key =~ s/^ /  /; #escape leading space into two spaces
 	$key eq '' and $key = ' EMPTY';
@@ -212,17 +213,31 @@ sub DELETE {
 	-d "$rootpath$key" and do {
 	rename "$rootpath$key", "$rootpath DELETIA$key";
 
-	eval {recursive_delete "$rootpath DELETIA$key"};
-	$@ and croak "could not delete directory $rootpath$key: $@";
-		defined wantarray and carp "data in tied hash lost in delete";
+	  if(defined wantarray){
+		my %rethash;
+		tie my %tmp, ref($ref), "$rootpath DELETIA$key";
+		my @keys = keys %tmp;
+		my $k;
+		for $k (@keys){
+			$rethash{$k} = delete $tmp{$k};
+		};
+		
+		eval {recursive_delete "$rootpath DELETIA$key"};
+		$@ and croak "could not delete directory $rootpath$key: $@";
+		return \%rethash;
+		
+	  }else{
+		eval {recursive_delete "$rootpath DELETIA$key"};
+		$@ and croak "could not delete directory $rootpath$key: $@";
 		return {};
+	  };
 	};
 
 	my $value;
 	if(defined wantarray){
 		local $/ = undef;
 		open FSDBFH, "<$rootpath$key";
-		my $value = <FSDBFH>;
+		$value = <FSDBFH>;
 	};
 	unlink "$rootpath$key";
 	$value;
@@ -323,6 +338,10 @@ to tied hashes are recursively copied, references to plain
 hashes are first tied to DirDB and then recursively copied. Storing
 a circular hash reference structure will cause DirDB to croak.
 
+As of version 0.06, DirDB now recursively copies subdirectory contents
+into an in-memory hash and returns a reference to that hash when
+a previously stored hash reference is deleted in non-void context.
+
 DirDB will croak if it can't open an existing file system
 entity.
 
@@ -390,11 +409,13 @@ Andrew Moore and Craig S. Cottingham.
 
 =head1 LICENSE
 
-GPL
+GPL/Artistic (the same terms as Perl itself)
 
 =head1 SEE ALSO
 
 better read <l perltie> before trying to extend this
+
+
 
 GPL
 
