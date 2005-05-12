@@ -5,8 +5,10 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
+my $DefaultArrayImpl = ['Tie::File' =>DATAPATH => recsep => "\0"]; # may change
+my %ArrayImpl;
 sub TIEHASH {
 	my $self = shift;
 	my $rootpath = shift or croak "we need a rootpath";
@@ -14,12 +16,15 @@ sub TIEHASH {
 	-d $rootpath or
 	   mkdir $rootpath, 0777 or
 	     croak "could not create dir $rootpath: $!";
+	my $me = bless \"$rootpath/", $self;
 
-	bless \"$rootpath/", $self;
+	my %moreargs = @_;
+	$ArrayImpl{$me} = $moreargs{ARRAY} || $DefaultArrayImpl;
+	$me;
 };
 
 sub TIEARRAY {
-	confess "DirDB does not support arrays yet";
+	confess "DirDB does not support arrays yet, although as of version 0.11 you may store and retrieve array references";
 };
 
 sub TIESCALAR {
@@ -67,6 +72,28 @@ sub FETCH {
 	if(-d "$rootpath$key"){
 	
 		tie my %newhash, ref($ref),"$rootpath$key";
+		-f "$rootpath$key/ ARRAY" and do {
+			my @TieArgs= split /\n/,tied(%newhash)->FETCHMETA('ARRAY');
+			my $classname = shift @TieArgs;
+			my @newarr;
+		   eval{
+			tie @newarr, $classname,
+			map {
+				$_ eq 'DATAPATH' ?
+				"$rootpath$key/DATA" : $_
+			} @TieArgs or die <<EOF;
+Tie <<$classname, @TieArgs>> Failed with error <<$!>>
+EOF
+		   }; $@ and croak "string tie problem: $@";
+			return 
+				-f "$rootpath$key/ BLESS"
+				?
+				bless \@newarr, tied(%newhash)->FETCHMETA('BLESS')
+				:
+				 \@newarr;
+
+		};
+		$ArrayImpl{tied %newhash} = $ArrayImpl{$ref};
  		return 
 			-f "$rootpath$key/ BLESS"
 			?
@@ -86,7 +113,7 @@ sub FETCH {
 {
 my %CircleTracker;
 sub STORE {
-	my ($ref , $key, $value) = @_;
+	my ($ref , $key, $value,$Xbless) = @_;
 	my $rootpath = $$ref;
 	my ($bless, $underly);
 	# print "Storing $value to $key in $$ref\n";
@@ -97,6 +124,39 @@ sub STORE {
 	my $refvalue = ref $value;
 	if ($refvalue){
 
+		if ($refvalue eq 'ARRAY'){
+			my %newhash;
+			tie %newhash, DirDB=>"$rootpath A$rnd";
+			tied(%newhash)->STOREMETA('ARRAY', join "\n", @{$ArrayImpl{$ref}});
+			my @TieArgs = map {
+				$_ eq 'DATAPATH' ? "$rootpath$key/DATA" : $_
+			} @{$ArrayImpl{$ref}};
+			$Xbless and
+				tied(%newhash)->STOREMETA('BLESS', $Xbless);
+		 	sleep 1 while !mkdir "$rootpath LOCK$key",0777;
+		 	{
+			  no warnings;
+			  rename "$rootpath$key", "$rootpath GARBAGE$rnd"; 
+			};
+			rename "$rootpath A$rnd","$rootpath$key";
+			my @NewArr = @$value;
+			my $CN = shift @TieArgs;
+		    eval{
+			tie @$value,
+				# $TieArgs[0],@TieArgs[1..$#TieArgs]
+				$CN,@TieArgs
+			or die "array tie to <<$CN, @TieArgs>> failed <<$!>>\n";
+			@$value = @NewArr;
+		    }; my $ERR = $@;
+			rmdir "$rootpath LOCK$key";
+		    $ERR and croak "DirDB arrayref store problem: $ERR";
+			eval {recursive_delete "$rootpath GARBAGE$rnd"};
+		 	if($@){
+				croak "GC problem: $@";
+		 	};
+		 	return;
+		};
+
 		if ( $CircleTracker{$value}++ ){
 	          croak "$ref version $VERSION cannot store circular structures\n";
 		};
@@ -106,13 +166,17 @@ sub STORE {
 		  ($bless,$underly) = ( "$value" =~ /^(.+)=([A-Z]+)\(/ );
 		  {
 			 no warnings; #suppress uninitalized value warning
-			$underly eq 'HASH'  or
+			$underly eq 'HASH' and goto gottahash;
+			$underly eq 'ARRAY' and do{
+				STORE($ref, $key, [@$value],$bless);
+				return;
+			};
 	          croak 
 		   "$ref version $VERSION only stores references to HASH, not $underly blessed to $refvalue\n";	
 		  }
 			
 		};
-		
+		gottahash:	
 		if (tied (%$value)){
 			# recursive copy
 		 tie my %tmp, ref($ref), "$rootpath TMP$rnd" or
@@ -324,8 +388,38 @@ sub CLEAR{
    
    sub DESTROY{
        delete $IteratorListings{$_[0]};
+       delete $ArrayImpl{$_[0]};
    };
  
+}; # end visibility of %IteratorListings
+
+sub lock{
+	my $path = ${shift @_};
+	my $key= '';
+	if(@_){
+		$key = shift;
+		length $key or $key = ' EMPTY';
+	};
+	return obtain DirDB::lock "$path$key";
+};
+
+package DirDB::lock;
+use Carp;
+my %OldLocks;
+sub obtain{
+	my $path = shift;
+	while(!mkdir "$path LOCK",0777){
+		select(undef,undef,undef,0.2); 
+	};
+	bless \$path;
+};
+sub release{
+	rmdir "$$_[0] LOCK" or croak "failure releasing $$_[0]: $!";
+	$OldLocks{"$_[0]"} = 1;
+};
+sub DESTROY{
+	delete $OldLocks{"$_[0]"} or
+	rmdir "$$_[0] LOCK" or croak "failure releasing $$_[0]: $!";
 };
 
 1;
@@ -333,7 +427,7 @@ __END__
 
 =head1 NAME
 
-DirDB - use a directory as a persistence back end for (multi-level) (blessed) hashes
+DirDB - use a directory as a persistence back end for (multi-level) (blessed) hashes (that may contain array references) (and can be advisorialy locked)
 
 =head1 SYNOPSIS
 
@@ -341,12 +435,21 @@ DirDB - use a directory as a persistence back end for (multi-level) (blessed) ha
   tie my %session, 'DirDB', "./data/session";
   $session{$sessionID}{email} = get_emailaddress();
   $session{$sessionID}{objectcache}{fribble} ||= new fribble;
+  #
+  use Tie::File; # see below -- any array-in-a-filesystem representation
+                 # is supported
+  push @{$session{$sessionID}{events}}, $event;
 
 =head1 DESCRIPTION
 
 DirDB is a package that lets you access a directory
 as a hash. The final directory will be created, but not
-the whole path to it.
+the whole path to it. It is similar to Tie::Persistent, but different
+in that all accesses are immediately reflected in the file system,
+and very little is kept in perl memory. (your OS's file cacheing
+takes care of that -- DirDB only hits the disk a lot on poorly
+designed operating systems without file system caches, which isn't
+any of them any more.)
 
 The empty string, used as a key, will be translated into
 ' EMPTY' for purposes of storage and retrieval.  File names
@@ -371,6 +474,43 @@ Storable functioning has been moved to L<DirDB::Storable>
 
 Version 0.10 will store and retrieve blessed hash-references and
 blesses them back into what they were when they were stored.
+
+=head2 ARRAY tie-time argument
+
+Version 0.11 allows storing and retrieval of references to arrays
+through taking an 'ARRAY' tie-time argument, which is an arrayref
+of the args used to tie the array before returning it. A token that
+is string-equal to 'DATAPATH' will be replaced with a place in the
+file system for the array tieing implementation to do it's thing.
+At this version, the default array implementation is
+
+     ['Tie::File' => DATAPATH => recsep => "\0"]
+
+but this may change, perhaps when a DirDB::Array package that 
+gracefully handles references is devised.  Forwards-compatibility is
+maintained by storing the array implementation details with
+each stored arrayref.
+
+=head2 lock method (package DirDB::lock)
+
+Version 0.11 also introduces a C<lock> method that obtains
+an advisory mkdir lock on either a whole tied hash or on a key in it.
+
+     tie %P, DirDB=>'/home/aurora/persistentdata';
+     ...
+     my $advisory_lock1 = tied(%P)->lock; # on the whole hash
+     my $advisory_lock2 = tied(%P)->lock('birdy'); # on the key 'birdy'
+     {
+        my $advisory_lock3 = tied(%P)->lock(''); # on the null key 
+
+these locks last until they are C<DESTROY>ed by the garbage collctor
+or until the C<release> method is called on them.
+
+	$advisory_lock1->release;
+	release $advisory_lock2;
+     };
+
+=head2 croaking on permissions problems
 
 DirDB will croak if it can't open an existing file system
 entity.
@@ -417,17 +557,31 @@ is a hash.  This may change. The root of a DirDB tree will not get blessed
 but all blessed hashreference branches will be blessed on fetch into the package
 they were in when stored. 
 
+=head2 storing and retrieving array references
+
+at this version, Tie::File is used for an array implementation.  The
+array implementation can be specified with an ARRAY tie-time argument,
+like so:
+
+	use Array::Virtual;
+	use DirDB 0.11;
+	tie my %Persistent, DirDB => './data',
+ 		ARRAY => ["Array::Virtual", DATAPATH => 0664];
+
+
+
 =head2 RISKS
 
 =head3 stale lock risk
 
 "mkdir locking" is used to protect incomplete directories
-from being accessed while they are being written. It is conceivable
+from being accessed while they are being written, and is
+now used as well for advisory locking. It is conceivable
 that your program might catch a
 signal and die while inside a critical section.  If this happens,
 a simple 
 
-    find /your/data -type d -name ' LOCK*'
+    find /your/data -type d -name '* LOCK*'
 
 at the command line will identify what you need to delete.
 
