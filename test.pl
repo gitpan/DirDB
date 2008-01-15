@@ -18,6 +18,8 @@ $dcty{pid} = $$;
 # print "\nFETCH TEST\n";
 ok($dcty{pid},$$);
 ok(delete($dcty{pid}),$$);
+warn "after deleting, still have key <$_>\n" for keys %dcty;
+ ok((keys %dcty) == 0);
 
 
 
@@ -38,7 +40,7 @@ ok(delete($dcty{pid}),$$);
 %dcty = ();
 
 # print "Keys now @{[keys %dcty]}\n";
-
+warn "after clearing, still have key <$_>\n" for keys %dcty;
  ok((keys %dcty) == 0);
 # print "\nDelete slice test\n";
 @dcty{1..5} = qw{fee fi fo fum five};

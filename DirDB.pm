@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.11';
+our $VERSION = '0.12';
 
 my $DefaultArrayImpl = ['Tie::File' =>DATAPATH => recsep => "\0"]; # may change
 my %ArrayImpl;
@@ -52,10 +52,18 @@ sub recursive_delete($){
 	};
 	opendir FSDBFH, $path or croak "opendir $path: $!";
 	my @DirEnts = (readdir FSDBFH);
+	#warn "direrctoy $path contains [@DirEnts]";
+	closedir FSDBFH;
 	while(defined(my $entity = shift @DirEnts )){
 		$entity =~ /^\.\.?\Z/ and next;
 		 recursive_delete "$path/$entity";
 	};
+#1 && do{
+#	opendir FSDBFH, $path or croak "opendir $path: $!";
+#	my @DirEnts = (readdir FSDBFH);
+#	warn "after deleting, direrctoy $path contains [@DirEnts]";
+#	closedir FSDBFH;
+#      };
 	rmdir $path or die "could not rmdir [$path]: $!\n";
 
 };
@@ -64,6 +72,7 @@ sub FETCH {
 	my $ref = shift;
 	defined (my $rootpath = $$ref) or croak "undefined rootpath";
 	my $key = shift;
+#	warn "fetching $key from $rootpath";
 	$key =~ s/^ /  /; #escape leading space into two spaces
 	# defined (my $key = shift) or return undef;
 	$key eq '' and $key = ' EMPTY';
@@ -272,7 +281,9 @@ sub FETCHMETA {
 	local $/ = undef;
 	open FSDBFH, "<$rootpath$key"
 	   or croak "cannot open $rootpath$key: $!";
-	<FSDBFH>;
+	my $result = <FSDBFH>;
+	close FSDBFH;
+	$result;
 };
 
 sub STOREMETA {
@@ -296,10 +307,11 @@ sub DELETE {
 	$key eq '' and $key = ' EMPTY';
 
 	-e "$rootpath$key" or return undef;
-
+#warn "DELETING $rootpath$key";
 	-d "$rootpath$key" and do {
+#warn "DELETING directory $rootpath$key";
 
-	rename "$rootpath$key", "$rootpath DELETIA$key";
+	  rename "$rootpath$key", "$rootpath DELETIA$key" or die "rename: $!";
 
 	  if(defined wantarray){
 
@@ -326,8 +338,9 @@ sub DELETE {
 		local $/ = undef;
 		open FSDBFH, "<$rootpath$key";
 		$value = <FSDBFH>;
+		close FSDBFH;
 	};
-	unlink "$rootpath$key";
+	unlink "$rootpath$key" or die "could not unlink $rootpath$key: $!";
 	$value;
 };
 
@@ -355,7 +368,7 @@ sub CLEAR{
 	my $ref = shift;
 	my $path = $$ref;
 	opendir FSDBFH, $path or croak "opendir $path: $!";
-	$IteratorListings{$ref} = [ grep {!($_ =~ /^\.\.?\Z/)} readdir FSDBFH ];
+	$IteratorListings{$ref} = [ grep { defined $_ and !($_ =~ /^\.\.?\Z/)} readdir FSDBFH ];
 
 	#print "Keys in path <$path> will be shifted from <@{$IteratorListings{$ref}}>\n";
 	
@@ -366,9 +379,12 @@ sub CLEAR{
 	my $ref = shift;
 	#print "next key in path <$$ref> will be shifted from <@{$IteratorListings{$ref}}>\n";
 	@{$IteratorListings{$ref}} or return undef;
+	# warn join '|','BEGIN',@{$IteratorListings{$ref}},"END";
 	my $key = shift @{$IteratorListings{$ref}};
+	# warn "key: <$key>";
 	if ($key =~ s/^ //){
-		if ($key = m/^ /){
+		# warn "key: <$key>";
+		if ($key =~ m/^ /){
 			# we have unescaped a leading space.
 		}elsif ($key eq 'EMPTY'){
 			$key = ''
@@ -474,6 +490,10 @@ Storable functioning has been moved to L<DirDB::Storable>
 
 Version 0.10 will store and retrieve blessed hash-references and
 blesses them back into what they were when they were stored.
+
+Version 0.12 closes some directory handles which were not
+being closed automatically on cygwin, interfering with tests
+passing.
 
 =head2 ARRAY tie-time argument
 
